@@ -1,11 +1,16 @@
 import * as core from '@actions/core'
-import ModelClient, { isUnexpected } from '@azure-rest/ai-inference'
-import { AzureKeyCredential } from '@azure/core-auth'
 import * as fs from 'fs'
-import * as os from 'os'
-import * as path from 'path'
-
-const RESPONSE_FILE = 'modelResponse.txt'
+import * as tmp from 'tmp'
+import {connectToGitHubMCP} from './mcp.js'
+import {simpleInference, mcpInference} from './inference.js'
+import {loadContentFromFileOrInput, buildInferenceRequest} from './helpers.js'
+import {
+  loadPromptFile,
+  parseTemplateVariables,
+  isPromptYamlFile,
+  PromptConfig,
+  parseFileTemplateVariables,
+} from './prompt.js'
 
 /**
  * The main function for the action.
@@ -14,86 +19,108 @@ const RESPONSE_FILE = 'modelResponse.txt'
  */
 export async function run(): Promise<void> {
   try {
-    const promptFile: string = core.getInput('prompt-file')
-    const promptString: string = core.getInput('prompt')
+    const promptFilePath = core.getInput('prompt-file')
+    const inputVariables = core.getInput('input')
+    const fileInputVariables = core.getInput('file_input')
 
-    let prompt: string
-    if (promptFile !== undefined && promptFile !== '') {
-      if (!fs.existsSync(promptFile)) {
-        throw new Error(`Prompt file not found: ${promptFile}`)
-      }
-      prompt = fs.readFileSync(promptFile, 'utf-8')
-    } else if (promptString !== undefined && promptString !== '') {
-      prompt = promptString
+    let promptConfig: PromptConfig | undefined = undefined
+    let systemPrompt: string | undefined = undefined
+    let prompt: string | undefined = undefined
+
+    // Check if we're using a prompt YAML file
+    if (promptFilePath && isPromptYamlFile(promptFilePath)) {
+      core.info('Using prompt YAML file format')
+
+      // Parse template variables from both string inputs and file-based inputs
+      const stringVars = parseTemplateVariables(inputVariables)
+      const fileVars = parseFileTemplateVariables(fileInputVariables)
+      const templateVariables = {...stringVars, ...fileVars}
+
+      // Load and process prompt file
+      promptConfig = loadPromptFile(promptFilePath, templateVariables)
     } else {
-      throw new Error('prompt is not set')
+      // Use legacy format
+      core.info('Using legacy prompt format')
+
+      prompt = loadContentFromFileOrInput('prompt-file', 'prompt')
+      systemPrompt = loadContentFromFileOrInput('system-prompt-file', 'system-prompt', 'You are a helpful assistant')
     }
 
-    const systemPrompt: string = core.getInput('system-prompt')
-    const modelName: string = core.getInput('model')
-    const maxTokens: number = parseInt(core.getInput('max-tokens'), 10)
+    // Get common parameters
+    const modelName = promptConfig?.model || core.getInput('model')
+    let maxTokens = promptConfig?.modelParameters?.maxTokens ?? core.getInput('max-tokens')
 
-    const token = core.getInput('token') || process.env['GITHUB_TOKEN']
+    if (typeof maxTokens === 'string') {
+      maxTokens = parseInt(maxTokens, 10)
+    }
+
+    const token = process.env['GITHUB_TOKEN'] || core.getInput('token')
     if (token === undefined) {
       throw new Error('GITHUB_TOKEN is not set')
     }
 
+    // Get GitHub MCP token (use dedicated token if provided, otherwise fall back to main token)
+    const githubMcpToken = core.getInput('github-mcp-token') || token
+    const githubMcpToolsets = core.getInput('github-mcp-toolsets')
+
     const endpoint = core.getInput('endpoint')
 
-    const client = ModelClient(endpoint, new AzureKeyCredential(token), {
-      userAgentOptions: { userAgentPrefix: 'github-actions-ai-inference' }
-    })
+    // Build the inference request with pre-processed messages and response format
+    const inferenceRequest = buildInferenceRequest(
+      promptConfig,
+      systemPrompt,
+      prompt,
+      modelName,
+      promptConfig?.modelParameters?.temperature,
+      promptConfig?.modelParameters?.topP,
+      maxTokens,
+      endpoint,
+      token,
+    )
 
-    const response = await client.path('/chat/completions').post({
-      body: {
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt
-          },
-          { role: 'user', content: prompt }
-        ],
-        max_tokens: maxTokens,
-        model: modelName
-      }
-    })
+    const enableMcp = core.getBooleanInput('enable-github-mcp') || false
 
-    if (isUnexpected(response)) {
-      if (response.body.error) {
-        throw response.body.error
+    let modelResponse: string | null = null
+
+    if (enableMcp) {
+      const mcpClient = await connectToGitHubMCP(githubMcpToken, githubMcpToolsets)
+
+      if (mcpClient) {
+        modelResponse = await mcpInference(inferenceRequest, mcpClient)
+      } else {
+        core.warning('MCP connection failed, falling back to simple inference')
+        modelResponse = await simpleInference(inferenceRequest)
       }
-      throw new Error(
-        'An error occurred while fetching the response (' +
-          response.status +
-          '): ' +
-          response.body
-      )
+    } else {
+      modelResponse = await simpleInference(inferenceRequest)
     }
 
-    const modelResponse: string | null =
-      response.body.choices[0].message.content
-
-    // Set outputs for other workflow steps to use
     core.setOutput('response', modelResponse || '')
 
-    // Save the response to a file in case the response overflow the output limit
-    const responseFilePath = path.join(tempDir(), RESPONSE_FILE)
-    core.setOutput('response-file', responseFilePath)
+    // Create a temporary file for the response that persists for downstream steps.
+    // We use keep: true to prevent automatic cleanup - the file will be cleaned up
+    // by the runner when the job completes.
+    const responseFile = tmp.fileSync({
+      prefix: 'modelResponse-',
+      postfix: '.txt',
+      keep: true,
+    })
+
+    core.setOutput('response-file', responseFile.name)
 
     if (modelResponse && modelResponse !== '') {
-      fs.writeFileSync(responseFilePath, modelResponse, 'utf-8')
+      fs.writeFileSync(responseFile.name, modelResponse, 'utf-8')
     }
   } catch (error) {
-    // Fail the workflow run if an error occurs
     if (error instanceof Error) {
       core.setFailed(error.message)
     } else {
-      core.setFailed('An unexpected error occurred')
+      core.setFailed(`An unexpected error occurred: ${JSON.stringify(error, null, 2)}`)
     }
+    // Force exit to prevent hanging on open connections
+    process.exit(1)
   }
-}
 
-function tempDir(): string {
-  const tempDirectory = process.env['RUNNER_TEMP'] || os.tmpdir()
-  return tempDirectory
+  // Force exit to prevent hanging on open connections
+  process.exit(0)
 }
