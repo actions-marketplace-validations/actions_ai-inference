@@ -65,6 +65,13 @@ export async function run(): Promise<void> {
 
     const endpoint = core.getInput('endpoint')
 
+    // Get temperature and topP (prompt YAML modelParameters takes precedence over action inputs)
+    const temperatureInput = core.getInput('temperature')
+    const topPInput = core.getInput('top-p')
+    const temperature =
+      promptConfig?.modelParameters?.temperature ?? (temperatureInput ? parseFloat(temperatureInput) : undefined)
+    const topP = promptConfig?.modelParameters?.topP ?? (topPInput ? parseFloat(topPInput) : undefined)
+
     // Parse custom headers
     const customHeadersInput = core.getInput('custom-headers')
     const customHeaders = parseCustomHeaders(customHeadersInput)
@@ -75,8 +82,8 @@ export async function run(): Promise<void> {
       systemPrompt,
       prompt,
       modelName,
-      promptConfig?.modelParameters?.temperature,
-      promptConfig?.modelParameters?.topP,
+      temperature,
+      topP,
       maxTokens,
       endpoint,
       token,

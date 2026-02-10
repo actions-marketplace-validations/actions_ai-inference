@@ -47,7 +47,7 @@ export async function simpleInference(request: InferenceRequest): Promise<string
 
   const chatCompletionRequest: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
     messages: request.messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    max_tokens: request.maxTokens,
+    max_completion_tokens: request.maxTokens,
     model: request.modelName,
     temperature: request.temperature,
     top_p: request.topP,
@@ -95,7 +95,7 @@ export async function mcpInference(
 
     const chatCompletionRequest: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
       messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-      max_tokens: request.maxTokens,
+      max_completion_tokens: request.maxTokens,
       model: request.modelName,
       temperature: request.temperature,
       top_p: request.topP,

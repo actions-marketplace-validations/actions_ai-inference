@@ -72,7 +72,7 @@ describe('inference.ts', () => {
             content: 'Hello, AI!',
           },
         ],
-        max_tokens: 100,
+        max_completion_tokens: 100,
         model: 'gpt-4',
       })
 
@@ -176,7 +176,7 @@ describe('inference.ts', () => {
             content: 'Hello, AI!',
           },
         ],
-        max_tokens: 100,
+        max_completion_tokens: 100,
         model: 'gpt-4',
         response_format: requestWithResponseFormat.responseFormat,
       })
@@ -228,7 +228,7 @@ describe('inference.ts', () => {
       expect(callArgs.tools).toEqual(mockMcpClient.tools)
       expect(callArgs.response_format).toBeUndefined()
       expect(callArgs.model).toBe('gpt-4')
-      expect(callArgs.max_tokens).toBe(100)
+      expect(callArgs.max_completion_tokens).toBe(100)
 
       // Verify OpenAI client was initialized with empty custom headers
       expect(mockOpenAIClient).toHaveBeenCalledWith({

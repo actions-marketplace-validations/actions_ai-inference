@@ -58312,7 +58312,7 @@ async function simpleInference(request) {
     });
     const chatCompletionRequest = {
         messages: request.messages,
-        max_tokens: request.maxTokens,
+        max_completion_tokens: request.maxTokens,
         model: request.modelName,
         temperature: request.temperature,
         top_p: request.topP,
@@ -58349,7 +58349,7 @@ async function mcpInference(request, githubMcpClient) {
         coreExports.info(`MCP inference iteration ${iterationCount}`);
         const chatCompletionRequest = {
             messages: messages,
-            max_tokens: request.maxTokens,
+            max_completion_tokens: request.maxTokens,
             model: request.modelName,
             temperature: request.temperature,
             top_p: request.topP,
@@ -61548,11 +61548,16 @@ async function run() {
         const githubMcpToken = coreExports.getInput('github-mcp-token') || token;
         const githubMcpToolsets = coreExports.getInput('github-mcp-toolsets');
         const endpoint = coreExports.getInput('endpoint');
+        // Get temperature and topP (prompt YAML modelParameters takes precedence over action inputs)
+        const temperatureInput = coreExports.getInput('temperature');
+        const topPInput = coreExports.getInput('top-p');
+        const temperature = promptConfig?.modelParameters?.temperature ?? (temperatureInput ? parseFloat(temperatureInput) : undefined);
+        const topP = promptConfig?.modelParameters?.topP ?? (topPInput ? parseFloat(topPInput) : undefined);
         // Parse custom headers
         const customHeadersInput = coreExports.getInput('custom-headers');
         const customHeaders = parseCustomHeaders(customHeadersInput);
         // Build the inference request with pre-processed messages and response format
-        const inferenceRequest = buildInferenceRequest(promptConfig, systemPrompt, prompt, modelName, promptConfig?.modelParameters?.temperature, promptConfig?.modelParameters?.topP, maxTokens, endpoint, token, customHeaders);
+        const inferenceRequest = buildInferenceRequest(promptConfig, systemPrompt, prompt, modelName, temperature, topP, maxTokens, endpoint, token, customHeaders);
         const enableMcp = coreExports.getBooleanInput('enable-github-mcp') || false;
         let modelResponse = null;
         if (enableMcp) {
