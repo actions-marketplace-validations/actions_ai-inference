@@ -27,7 +27,7 @@ jobs:
 
       - name: Setup Node.js
         id: setup-node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -38,7 +38,7 @@ jobs:
 
       - name: Lint Codebase
         id: super-linter
-        uses: super-linter/super-linter/slim@5119dcd8011e92182ce8219d9e9efc82f16fddb6
+        uses: super-linter/super-linter/slim@4ce20838b8ab83717e78138c5b3a1407148e0918
         env:
           DEFAULT_BRANCH: main
           FILTER_REGEX_EXCLUDE: dist/**/*
@@ -52,3 +52,8 @@ jobs:
           VALIDATE_JSON: false
           VALIDATE_TYPESCRIPT_STANDARD: false
           VALIDATE_GITHUB_ACTIONS: false # false until linter schemas are updated to include the models permission
+          # Biome conflicts with the project's Prettier+ESLint setup (tabs vs spaces,
+          # double vs single quotes, semicolons). Same rationale as the standard/ES
+          # disables above — pick one toolchain per concern.
+          VALIDATE_BIOME_FORMAT: false
+          VALIDATE_BIOME_LINT: false

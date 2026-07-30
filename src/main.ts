@@ -1,9 +1,8 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
 import * as tmp from 'tmp'
-import {connectToGitHubMCP} from './mcp.js'
-import {simpleInference, mcpInference} from './inference.js'
-import {loadContentFromFileOrInput, buildInferenceRequest, parseCustomHeaders} from './helpers.js'
+import {copilotInference} from './copilot.js'
+import {loadContentFromFileOrInput, buildMessages, safeExit} from './helpers.js'
 import {
   loadPromptFile,
   parseTemplateVariables,
@@ -11,6 +10,23 @@ import {
   PromptConfig,
   parseFileTemplateVariables,
 } from './prompt.js'
+
+const SUPPORTED_PROVIDERS = ['copilot'] as const
+type Provider = (typeof SUPPORTED_PROVIDERS)[number]
+
+function parseProvider(value: string): Provider {
+  const normalized = (value || '').trim().toLowerCase()
+  if (normalized === '' || normalized === 'copilot') return 'copilot'
+  throw new Error(`Unsupported provider "${value}" (expected one of: ${SUPPORTED_PROVIDERS.join(', ')})`)
+}
+
+function parseAllowTools(input: string): string[] {
+  if (!input) return []
+  return input
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+}
 
 /**
  * The main function for the action.
@@ -46,69 +62,28 @@ export async function run(): Promise<void> {
       systemPrompt = loadContentFromFileOrInput('system-prompt-file', 'system-prompt', 'You are a helpful assistant')
     }
 
-    // Get common parameters
     const modelName = promptConfig?.model || core.getInput('model')
-
-    // Parse token limit inputs
-    const maxCompletionTokensInput =
-      promptConfig?.modelParameters?.maxCompletionTokens ?? core.getInput('max-completion-tokens')
-    const maxCompletionTokens = maxCompletionTokensInput ? Number(maxCompletionTokensInput) : undefined
-
-    const maxTokensInput = promptConfig?.modelParameters?.maxTokens ?? core.getInput('max-tokens')
-    const maxTokens = maxCompletionTokens != null ? undefined : maxTokensInput ? Number(maxTokensInput) : undefined
 
     const token = process.env['GITHUB_TOKEN'] || core.getInput('token')
     if (token === undefined) {
       throw new Error('GITHUB_TOKEN is not set')
     }
+    core.setSecret(token)
 
-    // Get GitHub MCP token (use dedicated token if provided, otherwise fall back to main token)
-    const githubMcpToken = core.getInput('github-mcp-token') || token
-    const githubMcpToolsets = core.getInput('github-mcp-toolsets')
+    // The provider input only accepts "copilot"; parseProvider throws on anything else.
+    const provider = parseProvider(core.getInput('provider'))
 
-    const endpoint = core.getInput('endpoint')
-
-    // Get temperature and topP (prompt YAML modelParameters takes precedence over action inputs)
-    const temperatureInput = core.getInput('temperature')
-    const topPInput = core.getInput('top-p')
-    const temperature =
-      promptConfig?.modelParameters?.temperature ?? (temperatureInput ? parseFloat(temperatureInput) : undefined)
-    const topP = promptConfig?.modelParameters?.topP ?? (topPInput ? parseFloat(topPInput) : undefined)
-
-    // Parse custom headers
-    const customHeadersInput = core.getInput('custom-headers')
-    const customHeaders = parseCustomHeaders(customHeadersInput)
-
-    // Build the inference request with pre-processed messages and response format
-    const inferenceRequest = buildInferenceRequest(
-      promptConfig,
-      systemPrompt,
-      prompt,
-      modelName,
-      temperature,
-      topP,
-      maxTokens,
-      maxCompletionTokens,
-      endpoint,
-      token,
-      customHeaders,
-    )
-
-    const enableMcp = core.getBooleanInput('enable-github-mcp') || false
+    const messages = buildMessages(promptConfig, systemPrompt, prompt)
 
     let modelResponse: string | null = null
 
-    if (enableMcp) {
-      const mcpClient = await connectToGitHubMCP(githubMcpToken, githubMcpToolsets)
-
-      if (mcpClient) {
-        modelResponse = await mcpInference(inferenceRequest, mcpClient)
-      } else {
-        core.warning('MCP connection failed, falling back to simple inference')
-        modelResponse = await simpleInference(inferenceRequest)
-      }
-    } else {
-      modelResponse = await simpleInference(inferenceRequest)
+    if (provider === 'copilot') {
+      modelResponse = await copilotInference({
+        messages,
+        model: modelName,
+        cliPath: core.getInput('copilot-cli-path') || undefined,
+        allowTools: parseAllowTools(core.getInput('copilot-allow-tools')),
+      })
     }
 
     core.setOutput('response', modelResponse || '')
@@ -133,10 +108,8 @@ export async function run(): Promise<void> {
     } else {
       core.setFailed(`An unexpected error occurred: ${JSON.stringify(error, null, 2)}`)
     }
-    // Force exit to prevent hanging on open connections
-    process.exit(1)
+    await safeExit(1)
   }
 
-  // Force exit to prevent hanging on open connections
-  process.exit(0)
+  await safeExit(0)
 }
